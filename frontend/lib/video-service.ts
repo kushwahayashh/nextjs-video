@@ -122,6 +122,28 @@ export class VideoService {
   }
 
   /**
+   * Regenerate thumbnail for a single video file and return the new URL
+   */
+  static async regenerateThumbnail(file: string): Promise<string | undefined> {
+    const filePath = join(this.VIDEOS_DIR, file);
+
+    // Determine duration using primary and fallback methods
+    let duration: number | undefined;
+    try {
+      duration = await this.getVideoDuration(filePath);
+    } catch {
+      try {
+        duration = await this.getDurationFromStreams(filePath);
+      } catch {
+        // Continue without duration; ensureThumbnail will return undefined
+      }
+    }
+
+    // Force regeneration
+    return await this.ensureThumbnail(file, duration, true);
+  }
+
+  /**
    * Get video duration using ffprobe
    */
   static async getVideoDuration(filePath: string): Promise<number> {

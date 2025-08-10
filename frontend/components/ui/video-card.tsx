@@ -1,10 +1,11 @@
 import { VideoMetadata } from "@/lib/types";
 import { formatFileSize, formatDuration } from "@/lib/utils";
 import Image from "next/image";
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import { ContextMenu } from "@/components/ui/context-menu";
 import { MoreVertical, Image as ImageIcon } from "lucide-react";
 import { useRouter } from "next/navigation";
+import { useThumbnailContext } from "@/contexts/thumbnail-context";
 
 interface VideoCardProps {
   video: VideoMetadata;
@@ -12,9 +13,18 @@ interface VideoCardProps {
 
 export function VideoCard({ video }: VideoCardProps) {
   const router = useRouter();
+  const { notifyThumbnailRefresh, getThumbnailUrl } = useThumbnailContext();
   const [menuOpen, setMenuOpen] = useState(false);
   const [menuPos, setMenuPos] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
   const [isGenerating, setIsGenerating] = useState(false);
+  const [isRefreshingThumb, setIsRefreshingThumb] = useState(false);
+  const [currentThumbnailUrl, setCurrentThumbnailUrl] = useState(video.thumbnailUrl);
+
+  // Update thumbnail URL when context changes
+  useEffect(() => {
+    const updatedUrl = getThumbnailUrl(video.fileName, video.thumbnailUrl);
+    setCurrentThumbnailUrl(updatedUrl);
+  }, [video.fileName, video.thumbnailUrl, getThumbnailUrl]);
 
   const handlePlay = useCallback(() => {
     if (!video.videoUrl) return;
@@ -55,6 +65,33 @@ export function VideoCard({ video }: VideoCardProps) {
     }
   }, [isGenerating, video.fileName]);
 
+  const refreshThumbnail = useCallback(async () => {
+    if (isRefreshingThumb) return;
+    try {
+      setIsRefreshingThumb(true);
+      const res = await fetch("/api/thumbnail", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ fileName: video.fileName }),
+      });
+      if (!res.ok) {
+        console.error("Thumbnail refresh failed");
+        return;
+      }
+      const data = await res.json();
+      const url: string | undefined = data?.thumbnailUrl;
+      if (url) {
+        // Notify all video cards about the thumbnail refresh
+        notifyThumbnailRefresh(video.fileName, url);
+        console.log("Thumbnail refreshed for", video.fileName);
+      }
+    } catch (err) {
+      console.error("Failed to refresh thumbnail", err);
+    } finally {
+      setIsRefreshingThumb(false);
+    }
+  }, [isRefreshingThumb, video.fileName, notifyThumbnailRefresh]);
+
   return (
     <div
       className="relative overflow-hidden rounded-xl border bg-card shadow-sm cursor-pointer transition-shadow hover:shadow-md group"
@@ -62,12 +99,13 @@ export function VideoCard({ video }: VideoCardProps) {
       onContextMenu={handleContextMenu}
     >
       <div className="aspect-video relative overflow-hidden bg-muted">
-        {video.thumbnailUrl ? (
+        {currentThumbnailUrl ? (
           <Image
-            src={video.thumbnailUrl}
+            src={currentThumbnailUrl}
             alt={video.title}
             fill
             className="object-cover"
+            key={currentThumbnailUrl} // Force re-render when URL changes
           />
         ) : (
           <div className="flex items-center justify-center h-full bg-gradient-to-br from-muted to-background">
@@ -113,6 +151,13 @@ export function VideoCard({ video }: VideoCardProps) {
               icon: <ImageIcon className="h-4 w-4" />,
               onClick: generateSprite,
               disabled: isGenerating,
+            },
+            {
+              id: "refresh-thumbnail",
+              label: isRefreshingThumb ? "Refreshing…" : "Refresh thumbnails",
+              icon: <ImageIcon className="h-4 w-4" />,
+              onClick: refreshThumbnail,
+              disabled: isRefreshingThumb,
             },
           ]}
           position={menuPos}
