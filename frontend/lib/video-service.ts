@@ -11,6 +11,13 @@ export class VideoService {
   private static readonly VIDEOS_DIR = join(config.storageDir, 'videos');
   private static readonly THUMBNAILS_DIR = join(config.storageDir, 'thumbnails');
   private static readonly PROCESSED_DIR = join(config.storageDir, 'processed');
+
+  /** Ensure base directories exist */
+  private static async ensureBaseDirs(): Promise<void> {
+    try { await mkdir(this.VIDEOS_DIR, { recursive: true }); } catch {}
+    try { await mkdir(this.THUMBNAILS_DIR, { recursive: true }); } catch {}
+    try { await mkdir(this.PROCESSED_DIR, { recursive: true }); } catch {}
+  }
   /**
    * Ensure thumbnails directory exists
    */
@@ -214,6 +221,7 @@ export class VideoService {
    * Get all videos metadata
    */
   static async getAllVideos(): Promise<VideoMetadata[]> {
+    await this.ensureBaseDirs();
     const files = await readdir(this.VIDEOS_DIR);
     const videos: VideoMetadata[] = [];
     

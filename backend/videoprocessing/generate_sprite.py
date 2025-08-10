@@ -23,6 +23,20 @@ from PIL import Image
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+# Configure defaults here so the script can run with minimal or no arguments
+DEFAULT_INPUT_DIR = Path("D:/.luna/filen/videos")  # EDIT ME: default input videos directory
+DEFAULT_OUTPUT_DIR = Path("D:/.luna/filen/processed")  # EDIT ME: default output directory
+DEFAULT_WIDTH = 320
+DEFAULT_HEIGHT = 180
+DEFAULT_INTERVAL = 5
+DEFAULT_QUALITY = 4  # FFmpeg/webp quality (lower is better). 2 is high quality
+DEFAULT_IMAGE_FORMAT = "webp"
+DEFAULT_IMAGE_QUALITY = 80  # Pillow WEBP quality
+DEFAULT_VTT_MODE = "sprite"
+DEFAULT_COLS = 10
+DEFAULT_HWACCEL = "none"  # none|cuda|qsv|d3d11va
+DEFAULT_EXTRACT_MODE = "single_pass"  # single_pass|seek_parallel
+
 
 def probe_duration(input_path: Path) -> float:
     """
@@ -51,23 +65,31 @@ def format_timestamp(seconds: float) -> str:
     return f"{h:02d}:{m:02d}:{s:02d}.{ms:03d}"
 
 
-def extract_frame(input_path: Path, ts: float, size: Tuple[int, int], out: Path, quality: int):
+def extract_frame(input_path: Path, ts: float, size: Tuple[int, int], out: Path, quality: int, hwaccel: str = "none"):
     """
     Extracts a single frame at a specific timestamp.
     """
     width, height = size
-    subprocess.run([
+    cmd = [
         "ffmpeg", "-y",
-        "-ss", str(ts), "-i", str(input_path),
+        "-ss", str(ts),
+    ]
+    if hwaccel and hwaccel != "none":
+        # Use hardware accel for decode when possible
+        cmd += ["-hwaccel", hwaccel]
+    cmd += [
+        "-i", str(input_path),
         "-frames:v", "1",
-        "-vf", f"scale={width}:{height}:flags=lanczos",  # Higher quality scaling
-        "-f", "image2", "-q:v", str(quality),
+        "-vf", f"scale={width}:{height}:flags=lanczos",
+        "-c:v", "libwebp",
+        "-q:v", str(quality),
         str(out),
         "-hide_banner", "-loglevel", "error"
-    ], check=True)
+    ]
+    subprocess.run(cmd, check=True)
 
 
-def extract_frames_parallel(input_path: Path, timestamps: List[float], size: Tuple[int, int], tmpdir: Path, quality: int) -> List[Path]:
+def extract_frames_parallel(input_path: Path, timestamps: List[float], size: Tuple[int, int], tmpdir: Path, quality: int, hwaccel: str = "none") -> List[Path]:
     """
     Extracts frames in parallel using a thread pool.
     """
@@ -77,8 +99,8 @@ def extract_frames_parallel(input_path: Path, timestamps: List[float], size: Tup
     with ThreadPoolExecutor(max_workers=8) as executor:
         futures = {}
         for idx, ts in enumerate(timestamps):
-            out = tmpdir / f"frame_{idx:05d}.png"
-            futures[executor.submit(extract_frame, input_path, ts, size, out, quality)] = idx
+            out = tmpdir / f"frame_{idx:05d}.webp"
+            futures[executor.submit(extract_frame, input_path, ts, size, out, quality, hwaccel)] = idx
             frames.append(out)
         for i, future in enumerate(as_completed(futures)):
             _ = futures[future]
@@ -105,7 +127,7 @@ def build_sprite(
     width, height = size
     sprite = Image.new("RGB", (cols * width, rows * height))
     for idx, frame in enumerate(sorted(frames)):
-        img = Image.open(frame).convert("RGB")  # No resize here to avoid quality loss
+        img = Image.open(frame).convert("RGB")
         sprite.paste(img, ((idx % cols) * width, (idx // cols) * height))
     # Save sprite using requested format/quality
     save_image(sprite, output_path, image_format, image_quality)
@@ -165,58 +187,116 @@ def save_image(img: Image.Image, output_path: Path, image_format: str, quality: 
         img.save(output_path, format="PNG", optimize=True, compress_level=9)
 
 
-def main():
-    p = argparse.ArgumentParser(description="Generate high-quality thumbnail sprites and WebVTT files.")
-    p.add_argument("--input", required=True, help="Path to the input video file.")
-    p.add_argument("--outdir", required=True, help="Directory to save the output files.")
-    p.add_argument("--cols", type=int, default=10, help="Number of columns in the sprite sheet.")
-    p.add_argument("--rows", type=int, help="Number of rows in the sprite sheet (calculated automatically if not provided).")
-    p.add_argument("--width", type=int, default=320, help="Width of each thumbnail image.")
-    p.add_argument("--height", type=int, default=180, help="Height of each thumbnail image.")
-    p.add_argument("--interval", type=int, default=5, help="Interval in seconds between each thumbnail.")
-    p.add_argument("--quality", type=int, default=1, help="FFmpeg quality scale (lower is better, 1 is near-lossless).")
-    p.add_argument("--vtt-mode", choices=["sprite", "tiles"], default="sprite", help="Whether to reference a single sprite image or per-tile images in the VTT.")
-    p.add_argument("--image-format", choices=["webp", "jpg", "png"], default="webp", help="Image format for outputs (sprite or tiles).")
-    p.add_argument("--image-quality", type=int, default=100, help="Image quality for outputs (WEBP/JPEG). 1-100")
-    args = p.parse_args()
-
-    input_path, outdir = Path(args.input), Path(args.outdir)
-    tile_w, tile_h = args.width, args.height
+def process_single_video(
+    input_path: Path,
+    outdir: Path,
+    cols: int,
+    rows_opt: int | None,
+    width: int,
+    height: int,
+    interval: int,
+    quality: int,
+    vtt_mode: str,
+    image_format: str,
+    image_quality: int,
+    hwaccel: str = DEFAULT_HWACCEL,
+) -> None:
+    tile_w, tile_h = width, height
 
     duration = probe_duration(input_path)
-    timestamps = [max(0.5, i) for i in range(0, int(duration), args.interval)]
+    timestamps = [max(0.5, i) for i in range(0, int(duration), interval)]
     total_tiles = len(timestamps)
-    rows = args.rows if args.rows else math.ceil(total_tiles / args.cols)
+    rows = rows_opt if rows_opt else math.ceil(total_tiles / cols)
 
-    sys.stdout.write(f"Duration: {duration:.2f}s | Thumbnails: {total_tiles} ({args.cols}x{rows})\n")
+    sys.stdout.write(f"Duration: {duration:.2f}s | Thumbnails: {total_tiles} ({cols}x{rows})\n")
 
     with tempfile.TemporaryDirectory() as tmp:
         tmpdir = Path(tmp)
-        frames = extract_frames_parallel(input_path, timestamps, (tile_w, tile_h), tmpdir, args.quality)
+        frames = extract_frames_parallel(input_path, timestamps, (tile_w, tile_h), tmpdir, quality, hwaccel)
         base = input_path.stem
         vtt_path = outdir / f"{base}_sprite.vtt"
 
-        if args.vtt_mode == "sprite":
-            sprite_path = outdir / f"{base}_sprite.{args.image_format}"
+        if vtt_mode == "sprite":
+            sprite_path = outdir / f"{base}_sprite.{image_format}"
             sys.stdout.write("Building sprite image...\n")
-            build_sprite(frames, args.cols, rows, (tile_w, tile_h), sprite_path, args.image_format, args.image_quality)
-            sprite_rel = f"{sprite_path.name}"  # Use relative path
-            write_vtt(timestamps, args.cols, (tile_w, tile_h), sprite_rel, vtt_path)
+            build_sprite(frames, cols, rows, (tile_w, tile_h), sprite_path, image_format, image_quality)
+            sprite_rel = f"{sprite_path.name}"
+            write_vtt(timestamps, cols, (tile_w, tile_h), sprite_rel, vtt_path)
         else:
-            # Tiles mode: save individual images and reference them from the VTT
             tiles_dir = outdir / f"{base}_tiles"
             sys.stdout.write("Saving tiles images...\n")
             for idx, frame in enumerate(sorted(frames)):
                 img = Image.open(frame).convert("RGB")
-                tile_out = tiles_dir / f"tile_{idx:05d}.{args.image_format}"
-                save_image(img, tile_out, args.image_format, args.image_quality)
-                # Free resources promptly
+                tile_out = tiles_dir / f"tile_{idx:05d}.{image_format}"
+                save_image(img, tile_out, image_format, image_quality)
                 img.close()
             tiles_dir_rel = f"{base}_tiles"
-            write_vtt_tiles(timestamps, (tile_w, tile_h), tiles_dir_rel, vtt_path, args.image_format)
-            sprite_path = tiles_dir  # for a unified completion message
+            write_vtt_tiles(timestamps, (tile_w, tile_h), tiles_dir_rel, vtt_path, image_format)
+            sprite_path = tiles_dir
 
     sys.stdout.write(f"Output: {sprite_path}\nVTT: {vtt_path}\n")
+
+
+def main():
+    p = argparse.ArgumentParser(description="Generate high-quality thumbnail sprites and WebVTT files.")
+    p.add_argument("--input", help="Path to the input video file or directory. Uses DEFAULT_INPUT_DIR when omitted.")
+    p.add_argument("--outdir", help="Directory to save the output files. Uses DEFAULT_OUTPUT_DIR when omitted.")
+    p.add_argument("--cols", type=int, default=DEFAULT_COLS, help="Number of columns in the sprite sheet.")
+    p.add_argument("--rows", type=int, help="Number of rows in the sprite sheet (auto if not provided).")
+    p.add_argument("--width", type=int, default=DEFAULT_WIDTH, help="Width of each thumbnail image.")
+    p.add_argument("--height", type=int, default=DEFAULT_HEIGHT, help="Height of each thumbnail image.")
+    p.add_argument("--interval", type=int, default=DEFAULT_INTERVAL, help="Interval in seconds between each thumbnail.")
+    p.add_argument("--quality", type=int, default=DEFAULT_QUALITY, help="FFmpeg/WebP quality (lower is better).")
+    p.add_argument("--vtt-mode", choices=["sprite", "tiles"], default=DEFAULT_VTT_MODE, help="Whether to reference a single sprite image or per-tile images in the VTT.")
+    p.add_argument("--image-format", choices=["webp", "jpg", "png"], default=DEFAULT_IMAGE_FORMAT, help="Image format for outputs (sprite or tiles).")
+    p.add_argument("--image-quality", type=int, default=DEFAULT_IMAGE_QUALITY, help="Image quality for outputs (WEBP/JPEG). 1-100")
+    p.add_argument("--hwaccel", choices=["none", "cuda", "qsv", "d3d11va"], default=DEFAULT_HWACCEL, help="Hardware acceleration for decode, if available.")
+    args = p.parse_args()
+
+    in_arg = Path(args.input) if args.input else DEFAULT_INPUT_DIR
+    outdir = Path(args.outdir) if args.outdir else DEFAULT_OUTPUT_DIR
+
+    if in_arg.is_dir():
+        video_files: List[Path] = []
+        for ext in ("*.mp4", "*.mov", "*.avi", "*.mkv", "*.webm"):
+            video_files.extend(sorted(in_arg.glob(ext)))
+        if not video_files:
+            sys.stdout.write(f"No video files found in directory: {in_arg}\n")
+            sys.exit(1)
+        for vf in video_files:
+            sys.stdout.write(f"\nProcessing video: {vf.name}\n")
+            process_single_video(
+                vf,
+                outdir,
+                args.cols,
+                args.rows,
+                args.width,
+                args.height,
+                args.interval,
+                args.quality,
+                args.vtt_mode,
+                args.image_format,
+                args.image_quality,
+                args.hwaccel,
+            )
+    elif in_arg.is_file():
+        process_single_video(
+            in_arg,
+            outdir,
+            args.cols,
+            args.rows,
+            args.width,
+            args.height,
+            args.interval,
+            args.quality,
+            args.vtt_mode,
+            args.image_format,
+            args.image_quality,
+            args.hwaccel,
+        )
+    else:
+        sys.stdout.write("Input path not found. Provide --input (file or directory) or set DEFAULT_INPUT_DIR.\n")
+        sys.exit(1)
 
 
 if __name__ == "__main__":
