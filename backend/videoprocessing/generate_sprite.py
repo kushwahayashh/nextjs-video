@@ -22,10 +22,11 @@ from typing import List, Tuple
 from PIL import Image
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import logging
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
 # Configure defaults here so the script can run with minimal or no arguments
-DEFAULT_INPUT_DIR = Path("D:/.luna/filen/videos")  # EDIT ME: default input videos directory
-DEFAULT_OUTPUT_DIR = Path("D:/.luna/filen/processed")  # EDIT ME: default output directory
 DEFAULT_WIDTH = 320
 DEFAULT_HEIGHT = 180
 DEFAULT_INTERVAL = 5
@@ -65,7 +66,7 @@ def format_timestamp(seconds: float) -> str:
     return f"{h:02d}:{m:02d}:{s:02d}.{ms:03d}"
 
 
-def extract_frame(input_path: Path, ts: float, size: Tuple[int, int], out: Path, quality: int, hwaccel: str = "none"):
+def extract_frame(input_path: Path, ts: float, size: Tuple[int, int], out: Path, quality: int, hwaccel: str = "none", image_format: str = "webp"):
     """
     Extracts a single frame at a specific timestamp.
     """
@@ -77,19 +78,25 @@ def extract_frame(input_path: Path, ts: float, size: Tuple[int, int], out: Path,
     if hwaccel and hwaccel != "none":
         # Use hardware accel for decode when possible
         cmd += ["-hwaccel", hwaccel]
+
+    output_options = []
+    if image_format == "webp":
+        output_options = ["-c:v", "libwebp", "-q:v", str(quality)]
+    elif image_format == "jpeg":
+        output_options = ["-c:v", "mjpeg", "-q:v", str(quality), "-pix_fmt", "yuvj420p"]
+
     cmd += [
         "-i", str(input_path),
         "-frames:v", "1",
         "-vf", f"scale={width}:{height}:flags=lanczos",
-        "-c:v", "libwebp",
-        "-q:v", str(quality),
+        *output_options,
         str(out),
         "-hide_banner", "-loglevel", "error"
     ]
     subprocess.run(cmd, check=True)
 
 
-def extract_frames_parallel(input_path: Path, timestamps: List[float], size: Tuple[int, int], tmpdir: Path, quality: int, hwaccel: str = "none") -> List[Path]:
+def extract_frames_parallel(input_path: Path, timestamps: List[float], size: Tuple[int, int], tmpdir: Path, quality: int, hwaccel: str = "none", image_format: str = "webp") -> List[Path]:
     """
     Extracts frames in parallel using a thread pool.
     """
@@ -99,16 +106,14 @@ def extract_frames_parallel(input_path: Path, timestamps: List[float], size: Tup
     with ThreadPoolExecutor(max_workers=8) as executor:
         futures = {}
         for idx, ts in enumerate(timestamps):
-            out = tmpdir / f"frame_{idx:05d}.webp"
-            futures[executor.submit(extract_frame, input_path, ts, size, out, quality, hwaccel)] = idx
+            out = tmpdir / f"frame_{idx:05d}.{image_format}"
+            futures[executor.submit(extract_frame, input_path, ts, size, out, quality, hwaccel, image_format)] = idx
             frames.append(out)
         for i, future in enumerate(as_completed(futures)):
-            _ = futures[future]
-            elapsed = time.time() - start_time
-            sys.stdout.write(f"\rExtracting frames: {i+1}/{total} ({(i+1)/total*100:.1f}%) | {elapsed:.1f}s elapsed")
-            sys.stdout.flush()
+            if (i + 1) % (total // 10 or 1) == 0:
+                logging.info(f"Extracting frames: {i+1}/{total} ({(i+1)/total*100:.1f}%)")
     total_time = time.time() - start_time
-    sys.stdout.write(f"\rExtracting frames: done in {total_time:.1f}s{' ' * 20}\n")
+    logging.info(f"Extracting frames: done in {total_time:.1f}s")
     return frames
 
 
@@ -208,23 +213,23 @@ def process_single_video(
     total_tiles = len(timestamps)
     rows = rows_opt if rows_opt else math.ceil(total_tiles / cols)
 
-    sys.stdout.write(f"Duration: {duration:.2f}s | Thumbnails: {total_tiles} ({cols}x{rows})\n")
+    logging.info(f"Duration: {duration:.2f}s | Thumbnails: {total_tiles} ({cols}x{rows})")
 
     with tempfile.TemporaryDirectory() as tmp:
         tmpdir = Path(tmp)
-        frames = extract_frames_parallel(input_path, timestamps, (tile_w, tile_h), tmpdir, quality, hwaccel)
+        frames = extract_frames_parallel(input_path, timestamps, (tile_w, tile_h), tmpdir, quality, hwaccel, image_format)
         base = input_path.stem
         vtt_path = outdir / f"{base}_sprite.vtt"
 
         if vtt_mode == "sprite":
             sprite_path = outdir / f"{base}_sprite.{image_format}"
-            sys.stdout.write("Building sprite image...\n")
+            logging.info("Building sprite image...")
             build_sprite(frames, cols, rows, (tile_w, tile_h), sprite_path, image_format, image_quality)
             sprite_rel = f"{sprite_path.name}"
             write_vtt(timestamps, cols, (tile_w, tile_h), sprite_rel, vtt_path)
         else:
             tiles_dir = outdir / f"{base}_tiles"
-            sys.stdout.write("Saving tiles images...\n")
+            logging.info("Saving tiles images...")
             for idx, frame in enumerate(sorted(frames)):
                 img = Image.open(frame).convert("RGB")
                 tile_out = tiles_dir / f"tile_{idx:05d}.{image_format}"
@@ -234,13 +239,28 @@ def process_single_video(
             write_vtt_tiles(timestamps, (tile_w, tile_h), tiles_dir_rel, vtt_path, image_format)
             sprite_path = tiles_dir
 
-    sys.stdout.write(f"Output: {sprite_path}\nVTT: {vtt_path}\n")
+    logging.info(f"Output: {sprite_path}")
+    logging.info(f"VTT: {vtt_path}")
+
+    # Save metadata
+    metadata_path = outdir / f"{base}_meta.json"
+    metadata = {
+        "duration": duration,
+        "width": width,
+        "height": height,
+        "sprite": {
+            "path": str(sprite_path),
+            "vtt": str(vtt_path),
+        }
+    }
+    metadata_path.write_text(str(metadata))
+    logging.info(f"Metadata: {metadata_path}")
 
 
 def main():
     p = argparse.ArgumentParser(description="Generate high-quality thumbnail sprites and WebVTT files.")
-    p.add_argument("--input", help="Path to the input video file or directory. Uses DEFAULT_INPUT_DIR when omitted.")
-    p.add_argument("--outdir", help="Directory to save the output files. Uses DEFAULT_OUTPUT_DIR when omitted.")
+    p.add_argument("--input", required=True, help="Path to the input video file or directory.")
+    p.add_argument("--outdir", required=True, help="Directory to save the output files.")
     p.add_argument("--cols", type=int, default=DEFAULT_COLS, help="Number of columns in the sprite sheet.")
     p.add_argument("--rows", type=int, help="Number of rows in the sprite sheet (auto if not provided).")
     p.add_argument("--width", type=int, default=DEFAULT_WIDTH, help="Width of each thumbnail image.")
@@ -248,25 +268,52 @@ def main():
     p.add_argument("--interval", type=int, default=DEFAULT_INTERVAL, help="Interval in seconds between each thumbnail.")
     p.add_argument("--quality", type=int, default=DEFAULT_QUALITY, help="FFmpeg/WebP quality (lower is better).")
     p.add_argument("--vtt-mode", choices=["sprite", "tiles"], default=DEFAULT_VTT_MODE, help="Whether to reference a single sprite image or per-tile images in the VTT.")
-    p.add_argument("--image-format", choices=["webp", "jpg", "png"], default=DEFAULT_IMAGE_FORMAT, help="Image format for outputs (sprite or tiles).")
+    p.add_argument("--image-format", choices=["webp", "jpeg", "png"], default=DEFAULT_IMAGE_FORMAT, help="Image format for outputs (sprite or tiles).")
     p.add_argument("--image-quality", type=int, default=DEFAULT_IMAGE_QUALITY, help="Image quality for outputs (WEBP/JPEG). 1-100")
     p.add_argument("--hwaccel", choices=["none", "cuda", "qsv", "d3d11va"], default=DEFAULT_HWACCEL, help="Hardware acceleration for decode, if available.")
+    p.add_argument("--mode", choices=["sprite", "thumbnail"], default="sprite", help="Operation mode.")
+    p.add_argument("--timestamp", type=float, default=10.0, help="Timestamp for single thumbnail extraction.")
     args = p.parse_args()
 
-    in_arg = Path(args.input) if args.input else DEFAULT_INPUT_DIR
-    outdir = Path(args.outdir) if args.outdir else DEFAULT_OUTPUT_DIR
+    in_arg = Path(args.input)
+    outdir = Path(args.outdir)
 
-    if in_arg.is_dir():
-        video_files: List[Path] = []
-        for ext in ("*.mp4", "*.mov", "*.avi", "*.mkv", "*.webm"):
-            video_files.extend(sorted(in_arg.glob(ext)))
-        if not video_files:
-            sys.stdout.write(f"No video files found in directory: {in_arg}\n")
-            sys.exit(1)
-        for vf in video_files:
-            sys.stdout.write(f"\nProcessing video: {vf.name}\n")
+    try:
+        if args.mode == "thumbnail":
+            if not in_arg.is_file():
+                logging.error("Input must be a file for thumbnail mode.")
+                sys.exit(1)
+
+            out_path = outdir / f"{in_arg.stem}.jpeg"
+            extract_frame(in_arg, args.timestamp, (args.width, args.height), out_path, args.quality, args.hwaccel, "jpeg")
+            logging.info(f"Thumbnail saved to {out_path}")
+
+        elif in_arg.is_dir():
+            video_files: List[Path] = []
+            for ext in ("*.mp4", "*.mov", "*.avi", "*.mkv", "*.webm"):
+                video_files.extend(sorted(in_arg.glob(ext)))
+            if not video_files:
+                logging.warning(f"No video files found in directory: {in_arg}")
+                sys.exit(0)
+            for vf in video_files:
+                logging.info(f"Processing video: {vf.name}")
+                process_single_video(
+                    vf,
+                    outdir,
+                    args.cols,
+                    args.rows,
+                    args.width,
+                    args.height,
+                    args.interval,
+                    args.quality,
+                    args.vtt_mode,
+                    args.image_format,
+                    args.image_quality,
+                    args.hwaccel,
+                )
+        elif in_arg.is_file():
             process_single_video(
-                vf,
+                in_arg,
                 outdir,
                 args.cols,
                 args.rows,
@@ -279,23 +326,11 @@ def main():
                 args.image_quality,
                 args.hwaccel,
             )
-    elif in_arg.is_file():
-        process_single_video(
-            in_arg,
-            outdir,
-            args.cols,
-            args.rows,
-            args.width,
-            args.height,
-            args.interval,
-            args.quality,
-            args.vtt_mode,
-            args.image_format,
-            args.image_quality,
-            args.hwaccel,
-        )
-    else:
-        sys.stdout.write("Input path not found. Provide --input (file or directory) or set DEFAULT_INPUT_DIR.\n")
+        else:
+            logging.error("Input path not found. Provide --input (file or directory).")
+            sys.exit(1)
+    except Exception as e:
+        logging.error(f"An unexpected error occurred: {e}", exc_info=True)
         sys.exit(1)
 
 

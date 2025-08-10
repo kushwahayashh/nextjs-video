@@ -13,7 +13,6 @@ export default function PlayerPage() {
 
   const videoSrc = searchParams?.get("src");
   const fileName = searchParams?.get("file") || undefined;
-  const videoTitle = searchParams?.get("title") || "Untitled Video";
 
   if (!videoSrc) {
     return (

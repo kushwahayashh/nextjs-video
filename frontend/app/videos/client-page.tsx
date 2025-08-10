@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState, useCallback } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { VideoMetadata } from "@/lib/types";
 import { VideoLibrary as VideoLibraryComponent } from "@/components/ui/video-library";
