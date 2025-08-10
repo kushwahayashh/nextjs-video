@@ -24,8 +24,8 @@ import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # Configure defaults here so the script can run with minimal or no arguments
-DEFAULT_INPUT_DIR = Path("D:/.luna/filen/videos")  # EDIT ME: default input videos directory
-DEFAULT_OUTPUT_DIR = Path("D:/.luna/filen/processed")  # EDIT ME: default output directory
+DEFAULT_INPUT_DIR = Path("../filen/videos")  # EDIT ME: default input videos directory
+DEFAULT_OUTPUT_DIR = Path("../filen/processed")  # EDIT ME: default output directory
 DEFAULT_WIDTH = 320
 DEFAULT_HEIGHT = 180
 DEFAULT_INTERVAL = 5
