@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { DM_Sans, Geist_Mono } from "next/font/google";
 import { Navigation } from "@/components/ui/navigation";
 import Providers from "@/components/ui/providers";
+import PageFade from "@/components/ui/page-fade";
 import { Suspense } from "react";
 import "./globals.css";
 
@@ -39,7 +40,9 @@ export default function RootLayout({
           <Suspense fallback={null}>
             <Navigation />
           </Suspense>
-          <Suspense fallback={null}>{children}</Suspense>
+          <Suspense fallback={null}>
+            <PageFade>{children}</PageFade>
+          </Suspense>
         </Providers>
       </body>
     </html>

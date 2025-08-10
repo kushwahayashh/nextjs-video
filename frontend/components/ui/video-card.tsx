@@ -3,7 +3,7 @@ import { formatFileSize, formatDuration } from "@/lib/utils";
 import Image from "next/image";
 import { useState, useCallback, useEffect } from "react";
 import { ContextMenu } from "@/components/ui/context-menu";
-import { MoreVertical, Image as ImageIcon } from "lucide-react";
+import { Image as ImageIcon } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useThumbnailContext } from "@/contexts/thumbnail-context";
 
@@ -121,19 +121,7 @@ export function VideoCard({ video }: VideoCardProps) {
           </div>
         )}
       </div>
-      {/* Context menu trigger icon (visible on hover) */}
-      <button
-        aria-label="More options"
-        className="absolute top-2 right-2 z-10 opacity-0 group-hover:opacity-100 transition-opacity bg-popover/80 hover:bg-popover text-popover-foreground rounded-md p-1"
-        onClick={(e) => {
-          e.preventDefault();
-          e.stopPropagation();
-          setMenuPos({ x: e.clientX, y: e.clientY });
-          setMenuOpen(true);
-        }}
-      >
-        <MoreVertical className="h-4 w-4" />
-      </button>
+      {/* Context menu trigger icon removed */}
       <div className="p-4 space-y-2" onClick={(e) => { e.stopPropagation(); }}>
         <h3 className="font-semibold line-clamp-2 text-sm leading-tight text-card-foreground" title={video.title}>
           {video.title}
