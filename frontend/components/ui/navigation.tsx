@@ -2,7 +2,7 @@
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { Button } from "@/components/ui/button";
-import { Zap, Globe, Star, ArrowLeft, Search, X } from "lucide-react";
+import { Zap, Globe, Star, Search, X } from "lucide-react";
 import { ThemeToggle } from "@/components/ui/theme-toggle";
 import { Input } from "@/components/ui/input";
 import { useEffect, useState, useTransition, useCallback, useRef } from "react";
@@ -12,17 +12,16 @@ export function Navigation() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const [query, setQuery] = useState<string>("");
-  const showBackToLibrary = false;
   const showVideoSearch = pathname?.startsWith("/videos");
   const [, startTransition] = useTransition();
   const debounceRef = useRef<NodeJS.Timeout | null>(null);
 
-  // Initialize query from URL params only once
+  // Initialize query from URL params
   useEffect(() => {
     if (!showVideoSearch) return;
     const current = searchParams.get("q") ?? "";
     setQuery(current);
-  }, [showVideoSearch]); // Remove searchParams dependency to prevent re-renders
+  }, [showVideoSearch, searchParams]);
 
   // Optimized debounced search handler
   const handleSearchChange = useCallback((value: string) => {
